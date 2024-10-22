@@ -15,6 +15,8 @@ use warp::reply::Response;
 use merkle::tree as merkle;
 use merkle::Hash;
 
+const LOCAL_REPO: &str = "./local_repo";
+
 #[derive(Debug)]
 enum Error {
     InvalidProof,
@@ -58,7 +60,7 @@ impl ClientApp {
     ) -> Result<(Hash, Response), Box<dyn std::error::Error>> {
         let http_client = Client::new();
 
-        info!(event = "Encrypting file", file = file_id, file_path);
+        info!(event = "encrypting file", file = file_id, file_path);
         let mut data = fs::read(file_path)?;
 
         // encrypt the file with ChaCha20
@@ -68,7 +70,7 @@ impl ClientApp {
 
         let hash: [u8; 32] = Sha256::digest(&data).into();
 
-        info!(event = "Uploading file", file = file_id);
+        info!(event = "uploading a file", file = file_id);
 
         // Upload the file to the storage server
         let req = Request::builder()
@@ -99,15 +101,15 @@ impl ClientApp {
                 self.encrypt_and_upload(file_path, &file_id).await?;
 
             if res.status() == 200 {
-                info!(event = "Uploaded file", file_id);
+                info!(event = "uploaded file", file_id);
                 uploaded_files.push(hash);
 
                 // File successfully uploaded. Delete local file
                 fs::remove_file(path)?;
-                info!(event = "Deleted local copy", file_id);
+                info!(event = "local copy deleted ", file_id);
             } else {
                 error!(
-                    event = "Failed to upload",
+                    event = "failed to upload",
                     file_id,
                     status = ?res.status()
                 );
@@ -152,7 +154,7 @@ impl ClientApp {
 
         if res.status() != 200 {
             error!(
-                event = "Failed to download file",
+                event = "failed to download file",
                 file = file_id,
                 status = ?res.status()
             );
@@ -161,12 +163,12 @@ impl ClientApp {
 
         let hash: Hash = Sha256::digest(&file_data).into();
         info!(
-            event = "Download file",
+            event = "file data received",
             file = file_id,
             hash = hex::encode(hash),
         );
 
-        info!(event = "Request proof", file = file_id);
+        info!(event = "request proof", file = file_id);
 
         // Download the proof
         let mut res = client
@@ -186,7 +188,7 @@ impl ClientApp {
 
         if res.status() != 200 {
             error!(
-                event = "Failed to download proof",
+                event = "failed to download proof",
                 file = file_id,
                 status = ?res.status()
             );
@@ -201,7 +203,7 @@ impl ClientApp {
                 self.decrypt_and_save_file(file_id, &file_data)?;
             }
             Err(err) => {
-                error!(event = "Download failed", file = file_id, err = ?err);
+                error!(event = "download failed", file = file_id, err = ?err);
             }
         }
 
@@ -216,7 +218,7 @@ impl ClientApp {
         file_name: &str,
     ) -> Result<(), Error> {
         if let Some(merkle_root) = self.merkle_root {
-            info!(event = "Checking proof", file = file_name);
+            info!(event = "checking proof", file = file_name);
 
             // Verify the file with the proof
             if !merkle::Tree::verify_proof(hash, &proof, &merkle_root) {
@@ -240,10 +242,11 @@ impl ClientApp {
         let mut data = data.to_owned();
         cipher.apply_keystream(&mut data);
 
-        let _ = fs::create_dir_all("./downloads");
-        let path = format!("./downloads/{}", file_id);
+        let _ = fs::create_dir_all(LOCAL_REPO);
+        let path = format!("{}/{}", LOCAL_REPO, file_id);
+
         fs::write(Path::new(&path), data)?;
-        info!(event = "Valid file saved", file = path);
+        info!(event = "valid file saved", file = path);
 
         Ok(())
     }

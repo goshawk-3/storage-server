@@ -13,8 +13,6 @@ struct Config {
     server_url: String,
     /// The path to the folder to upload
     upload_dir: std::path::PathBuf,
-    /// The path to the folder where downloads are saved
-    download_dir: std::path::PathBuf,
 }
 
 #[tokio::main]
@@ -22,7 +20,6 @@ async fn main() {
     let args = Config::parse();
     let url = args.server_url;
     let src_folder = args.upload_dir;
-    let _dir = args.download_dir;
 
     let mut client = ClientApp::new(url.as_str());
 

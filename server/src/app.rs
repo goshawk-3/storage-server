@@ -1,16 +1,17 @@
 use std::collections::HashMap;
+use std::io;
 use std::{path::Path, sync::Arc};
 
 use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
 use tokio::fs;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{error, info};
 use warp::Filter;
 
 use merkle::tree as merkle;
 
-const UPLOADS_DIR: &str = "./uploads";
+const UPLOADS_DIR: &str = "./buckets";
 
 /// Represents a bucket of files uploaded by a client together with calculated Merkle tree
 #[derive(Default, Clone)]
@@ -55,10 +56,10 @@ impl ClientBucket {
     }
 
     /// Creates bucket folder if it does not exist
-    async fn create_dir(&self) -> String {
+    async fn create_dir(&self) -> io::Result<String> {
         let bucket_dir: String = self.get_dir();
-        let _ = fs::create_dir_all(&bucket_dir).await;
-        bucket_dir
+        fs::create_dir_all(&bucket_dir).await?;
+        Ok(bucket_dir)
     }
 
     fn get_dir(&self) -> String {
@@ -129,7 +130,9 @@ async fn upload_file(
         .entry(bucket_id.clone())
         .or_insert(ClientBucket::new(bucket_id.clone()));
 
-    let bucket_dir = bucket.create_dir().await;
+    let bucket_dir = bucket.create_dir().await.expect("valid bucket dir");
+
+    info!(request = "upload", bucket_dir, file_id);
 
     // Check if file already exists in the bucket
     if bucket.file_exists(&file_id).is_some() {
@@ -141,7 +144,9 @@ async fn upload_file(
 
     // Save the file on disk
     let file_path: String = format!("{}/{}", bucket_dir, file_id);
-    if fs::write(file_path.clone(), body).await.is_err() {
+    if let Err(err) = fs::write(file_path.clone(), body).await {
+        error!(event = "Failed to write file", file_id, bucket_id, error = ?err);
+
         return Ok(warp::reply::with_status(
             "Failed to write file",
             warp::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -150,7 +155,13 @@ async fn upload_file(
 
     bucket.calculate_merkle_tree(file_path.clone()).await;
 
-    info!(event = "Uploaded file", file_path, bucket_id, file_id);
+    info!(
+        event = "file uploaded",
+        file_path,
+        bucket_id,
+        file_id,
+        leaves_count = bucket.merkle_tree.leaves_count()
+    );
 
     Ok(warp::reply::with_status(
         "File uploaded",
@@ -164,6 +175,8 @@ async fn download_file(
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let guard = state.read().await;
+
+    info!(request = "download_file", bucket_id, file_id);
 
     // Get bucket by id
     let bucket = guard
@@ -181,7 +194,7 @@ async fn download_file(
     let path = format!("{}/{}", bucket.get_dir(), file_id);
     let data = fs::read(&path).await.unwrap();
 
-    info!(event = "Downloaded file", file_id, path);
+    info!(event = "file downloaded", file_id, path);
     Ok(warp::reply::with_status(data, warp::http::StatusCode::OK))
 }
 
@@ -192,6 +205,8 @@ async fn download_proof(
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let guard = state.read().await;
 
+    info!(request = "download_proof", bucket_id, file_id);
+
     // Get bucket by id
     let bucket = guard
         .buckets
@@ -200,11 +215,13 @@ async fn download_proof(
 
     if let Some(index) = bucket.file_exists(&file_id) {
         // Generate merkle path for the file
-        info!(event = "Proof requested", file_id, index);
+
         let proof: Vec<([u8; 32], u8)> = bucket.merkle_tree.get_proof(index);
 
         let proof_bytes =
             bincode::serialize(&proof).expect("valid proof serialization");
+
+        info!(event = "proof downloaded", file_id, index);
 
         return Ok(warp::reply::with_status(
             proof_bytes,

@@ -104,6 +104,15 @@ impl Tree {
             levels,
         }
     }
+
+    /// Returns the number of leaves in the tree
+    pub fn leaves_count(&self) -> usize {
+        if let Some(leaves) = self.levels.first() {
+            leaves.len()
+        } else {
+            0
+        }
+    }
 }
 
 #[cfg(test)]
