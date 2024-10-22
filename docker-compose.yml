@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  # Define the server service
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    command: '0.0.0.0:7878'
+    ports:
+      - "7878:7878"
+    entrypoint: [ "/bin/sh", "-c", "cargo run --release --bin server '0.0.0.0:7878'" ]
+
+  # Define the client service
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    depends_on:
+      - server
+    entrypoint: [ "/bin/sh", "-c", "cargo run --release --bin client 'http://server:7878' '/client_app/merkle/src'" ]

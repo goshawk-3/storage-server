@@ -1,0 +1,10 @@
+# Start from a Rust image to compile and run the Rust app
+FROM rust:latest
+WORKDIR /client_app
+
+# Copy the repository's code to the working directory
+COPY . .
+
+# Build the client binary
+RUN cargo build --release --bin client
+ENTRYPOINT ["cargo", "run", "--release", "--bin", "client"]
