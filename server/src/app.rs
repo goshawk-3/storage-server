@@ -13,7 +13,8 @@ use merkle::tree as merkle;
 
 const UPLOADS_DIR: &str = "./buckets";
 
-/// Represents a bucket of files uploaded by a client together with calculated Merkle tree
+/// Represents a bucket of files uploaded by a client together with calculated
+/// Merkle tree
 #[derive(Default, Clone)]
 struct ClientBucket {
     pub bucket_id: String,
@@ -53,6 +54,10 @@ impl ClientBucket {
 
             f == file_id
         })
+    }
+
+    fn get_filepath(&self, index: usize) -> Option<&String> {
+        self.files.get(index)
     }
 
     /// Creates bucket folder if it does not exist
@@ -171,12 +176,12 @@ async fn upload_file(
 
 async fn download_file(
     bucket_id: String,
-    file_id: String,
+    file_index: String,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let guard = state.read().await;
 
-    info!(request = "download_file", bucket_id, file_id);
+    info!(request = "download_file", bucket_id, file_index);
 
     // Get bucket by id
     let bucket = guard
@@ -184,28 +189,30 @@ async fn download_file(
         .get(&bucket_id)
         .ok_or(warp::reject::not_found())?;
 
-    if bucket.file_exists(&file_id).is_none() {
-        return Ok(warp::reply::with_status(
-            vec![],
-            warp::http::StatusCode::BAD_REQUEST,
-        ));
-    }
+    let index = file_index
+        .parse::<usize>()
+        .map_err(|_| warp::reject::not_found())?;
 
-    let path = format!("{}/{}", bucket.get_dir(), file_id);
-    let data = fs::read(&path).await.unwrap();
+    let file_path = bucket
+        .get_filepath(index)
+        .ok_or(warp::reject::not_found())?;
 
-    info!(event = "file downloaded", file_id, path);
+    let data = fs::read(file_path)
+        .await
+        .map_err(|_| warp::reject::not_found())?;
+
+    info!(event = "file downloaded", file_path);
     Ok(warp::reply::with_status(data, warp::http::StatusCode::OK))
 }
 
 async fn download_proof(
     bucket_id: String,
-    file_id: String,
+    file_index: String,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     let guard = state.read().await;
 
-    info!(request = "download_proof", bucket_id, file_id);
+    info!(request = "download_proof", bucket_id, file_index);
 
     // Get bucket by id
     let bucket = guard
@@ -213,24 +220,23 @@ async fn download_proof(
         .get(&bucket_id)
         .ok_or(warp::reject::not_found())?;
 
-    if let Some(index) = bucket.file_exists(&file_id) {
-        // Generate merkle path for the file
+    let index = file_index
+        .parse::<usize>()
+        .map_err(|_| warp::reject::not_found())?;
 
-        let proof: Vec<([u8; 32], u8)> = bucket.merkle_tree.get_proof(index);
+    let file_path = bucket
+        .get_filepath(index)
+        .ok_or(warp::reject::not_found())?;
 
-        let proof_bytes =
-            bincode::serialize(&proof).expect("valid proof serialization");
+    // Generate merkle path for the file
+    let proof: Vec<([u8; 32], u8)> = bucket.merkle_tree.get_proof(index);
+    let proof_bytes =
+        bincode::serialize(&proof).expect("valid proof serialization");
 
-        info!(event = "proof downloaded", file_id, index);
+    info!(event = "proof downloaded", file_path, index);
 
-        return Ok(warp::reply::with_status(
-            proof_bytes,
-            warp::http::StatusCode::OK,
-        ));
-    }
-
-    Ok(warp::reply::with_status(
-        vec![],
-        warp::http::StatusCode::BAD_REQUEST,
-    ))
+    return Ok(warp::reply::with_status(
+        proof_bytes,
+        warp::http::StatusCode::OK,
+    ));
 }

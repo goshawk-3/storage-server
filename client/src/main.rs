@@ -57,13 +57,11 @@ async fn main() {
     }
 
     // Download and verify each of the uploaded file
-    for (file, _) in &files {
-        let file_id = file.clone().into_string().unwrap();
-        if let Err(err) = client.download_and_verify(&file_id).await {
+    for (file_index, _) in files.iter().enumerate() {
+        if let Err(err) =
+            client.download_and_verify(&file_index.to_string()).await
+        {
             error!("Error downloading file: {:?}", err);
         }
     }
-
-    // TODO: use assert
-    let _ = client.download_and_verify(&"should_fail".to_string()).await;
 }

@@ -125,10 +125,11 @@ impl ClientApp {
 
     /// Download and verify a file from the storage server
     ///
-    /// If a valid proof is received, the file is decrypted and saved to the downloads folder
+    /// If a valid proof is received, the file is decrypted and saved to the
+    /// downloads folder
     pub async fn download_and_verify(
         &self,
-        file_id: &String,
+        file_index: &String,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let client = Client::new();
 
@@ -141,7 +142,7 @@ impl ClientApp {
             .get(
                 format!(
                     "{}/file/{}/{}",
-                    self.server_url, self.bucket_id, file_id
+                    self.server_url, self.bucket_id, file_index
                 )
                 .parse()?,
             )
@@ -155,7 +156,7 @@ impl ClientApp {
         if res.status() != 200 {
             error!(
                 event = "failed to download file",
-                file = file_id,
+                file = file_index,
                 status = ?res.status()
             );
             return Ok(());
@@ -164,18 +165,18 @@ impl ClientApp {
         let hash: Hash = Sha256::digest(&file_data).into();
         info!(
             event = "file data received",
-            file = file_id,
+            file_index,
             hash = hex::encode(hash),
         );
 
-        info!(event = "request proof", file = file_id);
+        info!(event = "request proof", file_index);
 
         // Download the proof
         let mut res = client
             .get(
                 format!(
                     "{}/proof/{}/{}",
-                    self.server_url, self.bucket_id, file_id
+                    self.server_url, self.bucket_id, file_index
                 )
                 .parse()?,
             )
@@ -189,7 +190,7 @@ impl ClientApp {
         if res.status() != 200 {
             error!(
                 event = "failed to download proof",
-                file = file_id,
+                file_index,
                 status = ?res.status()
             );
             return Ok(());
@@ -197,13 +198,15 @@ impl ClientApp {
 
         let proof: Vec<([u8; 32], u8)> = bincode::deserialize(&bytes)?;
 
+        info!(event = "checking proof", file_index);
+
         // Verify the file with the proof
-        match self.verify(proof, &hash, file_id).await {
+        match self.verify(proof, &hash).await {
             Ok(_) => {
-                self.decrypt_and_save_file(file_id, &file_data)?;
+                self.decrypt_and_save_file(file_index, &file_data)?;
             }
             Err(err) => {
-                error!(event = "download failed", file = file_id, err = ?err);
+                error!(event = "download failed", file_index, err = ?err);
             }
         }
 
@@ -215,11 +218,8 @@ impl ClientApp {
         &self,
         proof: Vec<(Hash, u8)>,
         hash: &Hash,
-        file_name: &str,
     ) -> Result<(), Error> {
         if let Some(merkle_root) = self.merkle_root {
-            info!(event = "checking proof", file = file_name);
-
             // Verify the file with the proof
             if !merkle::Tree::verify_proof(hash, &proof, &merkle_root) {
                 return Err(Error::InvalidProof);
