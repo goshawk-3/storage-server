@@ -11,14 +11,14 @@ struct Config {
     /// Storage server URL
     server_url: String,
     /// The path to the folder to upload
-    upload_dir: std::path::PathBuf,
+    source_dir: std::path::PathBuf,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Config::parse();
     let url = args.server_url;
-    let src_folder: &Path = args.upload_dir.as_ref();
+    let src_folder: &Path = args.source_dir.as_ref();
 
     let subscriber = Subscriber::builder()
         .with_max_level(tracing::Level::INFO)
@@ -26,7 +26,7 @@ async fn main() {
 
     let subscriber = subscriber.json().flatten_event(true).finish();
     tracing::subscriber::set_global_default(subscriber)
-        .expect("setting default subscriber failed");
+        .expect("default subscriber failed");
 
     info!(
         "Start client with source folder: {:?}, server_url: {}",

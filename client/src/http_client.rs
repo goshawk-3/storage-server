@@ -1,5 +1,5 @@
 use hyper::{body::HttpBody as _, Client};
-use hyper::{Body, Method, Request};
+use hyper::{Body, Method, Request, StatusCode};
 
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::ChaCha20;
@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+use thiserror::Error;
 use tracing::{error, info};
 use warp::reply::Response;
 
@@ -17,11 +18,16 @@ use merkle::Hash;
 
 pub(crate) const LOCAL_REPO: &str = "./local_repo";
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 enum Error {
+    #[error("invalid proof")]
     InvalidProof,
+    #[error("client is missing the Merkle root")]
     MissingMerkleRoot,
+    #[error("failed to download resource {0}: index: {1} status: {2}")]
+    FailedDownload(String, String, StatusCode),
 }
+
 pub struct ClientApp {
     keypair: Keypair,
     bucket_id: String,
@@ -133,37 +139,10 @@ impl ClientApp {
         &self,
         file_index: &String,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let client = Client::new();
-
-        //TODO: refactor
-        // shorter function
-        // error handling
-
-        // Download the file and proof
-        let mut res = client
-            .get(
-                format!(
-                    "{}/file/{}/{}",
-                    self.server_url, self.bucket_id, file_index
-                )
-                .parse()?,
-            )
+        // Download the file
+        let file_data = self
+            .download_blob(file_index.clone(), "file".to_owned())
             .await?;
-
-        let mut file_data = Vec::new();
-        while let Some(chunk) = res.data().await {
-            file_data.extend_from_slice(&chunk?);
-        }
-
-        if res.status() != 200 {
-            error!(
-                event = "failed to download file",
-                file = file_index,
-                status = ?res.status()
-            );
-            return Ok(());
-        }
-
         let hash: Hash = Sha256::digest(&file_data).into();
         info!(
             event = "file data received",
@@ -171,46 +150,17 @@ impl ClientApp {
             hash = hex::encode(hash),
         );
 
-        info!(event = "request proof", file_index);
-
         // Download the proof
-        let mut res = client
-            .get(
-                format!(
-                    "{}/proof/{}/{}",
-                    self.server_url, self.bucket_id, file_index
-                )
-                .parse()?,
-            )
+        info!(event = "request proof", file_index);
+        let bytes = self
+            .download_blob(file_index.clone(), "proof".to_owned())
             .await?;
-
-        let mut bytes = Vec::new();
-        while let Some(chunk) = res.data().await {
-            bytes.extend_from_slice(&chunk?);
-        }
-
-        if res.status() != 200 {
-            error!(
-                event = "failed to download proof",
-                file_index,
-                status = ?res.status()
-            );
-            return Ok(());
-        }
 
         let proof: Vec<([u8; 32], u8)> = bincode::deserialize(&bytes)?;
 
-        info!(event = "checking proof", file_index);
-
         // Verify the file with the proof
-        match self.verify(proof, &hash).await {
-            Ok(_) => {
-                self.decrypt_and_save_file(file_index, &file_data)?;
-            }
-            Err(err) => {
-                error!(event = "download failed", file_index, err = ?err);
-            }
-        }
+        self.verify(proof, &hash).await?;
+        self.decrypt_and_save_file(file_index, &file_data)?;
 
         Ok(())
     }
@@ -222,6 +172,13 @@ impl ClientApp {
         hash: &Hash,
     ) -> Result<(), Error> {
         if let Some(merkle_root) = self.merkle_root {
+            info!(
+                event = "checking proof",
+                hash = hex::encode(hash),
+                proof_len = proof.len(),
+                merkle_root = hex::encode(merkle_root)
+            );
+
             // Verify the file with the proof
             if !merkle::Tree::verify_proof(hash, &proof, &merkle_root) {
                 return Err(Error::InvalidProof);
@@ -251,5 +208,39 @@ impl ClientApp {
         info!(event = "valid file saved", file = path);
 
         Ok(())
+    }
+
+    /// Downloads a blob/binary object from the storage server
+    async fn download_blob(
+        &self,
+        file_index: String,
+        resource: String,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let client = Client::new();
+        let mut res = client
+            .get(
+                format!(
+                    "{}/{}/{}/{}",
+                    self.server_url, resource, self.bucket_id, file_index
+                )
+                .parse()?,
+            )
+            .await?;
+
+        let mut bytes = Vec::new();
+        while let Some(chunk) = res.data().await {
+            bytes.extend_from_slice(&chunk?);
+        }
+
+        if res.status() != 200 {
+            return Err(Error::FailedDownload(
+                resource,
+                file_index.clone(),
+                res.status(),
+            )
+            .into());
+        }
+
+        Ok(bytes)
     }
 }

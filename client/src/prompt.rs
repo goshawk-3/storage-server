@@ -72,7 +72,7 @@ pub(crate) async fn run_loop(server_url: String, src_folder: &Path) {
                     println!("{}: {:?}", index, file.0);
                 }
             }
-            // Upload all files from src folder to server
+            // Upload all files from SRC folder to the server
             Commands::UploadAll => {
                 let files = read_files(src_folder);
                 if let Err(err) = client.upload_files(&files).await {
