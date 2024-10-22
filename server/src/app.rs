@@ -86,7 +86,7 @@ pub async fn run_server(addr: &str) {
         .and_then(upload_file);
 
     // File request
-    // GET /proof/:bucket_id/:file_id
+    // GET /file/:bucket_id/:file_id
     let download = warp::path("file")
         .and(warp::get())
         .and(warp::path::param())
