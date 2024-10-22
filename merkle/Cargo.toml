@@ -11,5 +11,5 @@ rand = "0.8.5"
 criterion = { version = "0.5.1" }
 
 [[bench]]
-name = "merkle"
+name = "merkle_tree"
 harness = false
