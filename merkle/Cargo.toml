@@ -1,0 +1,15 @@
+[package]
+name = "merkle"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sha2 = "0.10" 
+
+[dev-dependencies]
+rand = "0.8.5"
+criterion = { version = "0.5.1" }
+
+[[bench]]
+name = "merkle"
+harness = false
