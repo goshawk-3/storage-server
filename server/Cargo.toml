@@ -1,0 +1,25 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+ 
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+sha2 = "0.10" 
+hyper = { version = "0.14", features = ["full"] }
+warp = "0.3"
+bincode = "1.3"
+bytes = "1.4"
+log = "0.4"
+structopt = "0.3"
+
+clap = { version="4.5.20", features = ["derive"] }
+tracing = "=0.1.40"
+tracing-subscriber = { workspace = true, features = [
+    "fmt",
+    "env-filter",
+    "json",
+] }
+ 
+
+merkle = {  workspace = true }
