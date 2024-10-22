@@ -7,4 +7,3 @@ COPY . .
 
 # Build the client binary
 RUN cargo build --release --bin client
-ENTRYPOINT ["cargo", "run", "--release", "--bin", "client"]

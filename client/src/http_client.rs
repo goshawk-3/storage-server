@@ -15,7 +15,7 @@ use warp::reply::Response;
 use merkle::tree as merkle;
 use merkle::Hash;
 
-const LOCAL_REPO: &str = "./local_repo";
+pub(crate) const LOCAL_REPO: &str = "./local_repo";
 
 #[derive(Debug)]
 enum Error {
@@ -117,8 +117,10 @@ impl ClientApp {
         }
 
         // Build the Merkle tree for all uploaded files
-        self.merkle_root =
-            merkle::Tree::build_from_leaves(uploaded_files).root_hash();
+        if !uploaded_files.is_empty() {
+            self.merkle_root =
+                merkle::Tree::build_from_leaves(uploaded_files).root_hash();
+        }
 
         Ok(())
     }

@@ -1,10 +1,9 @@
 mod http_client;
-
-use http_client::ClientApp;
-use std::{ffi::OsString, fs};
+mod prompt;
 
 use clap::Parser;
-use tracing::{error, info};
+use std::path::Path;
+use tracing::info;
 use tracing_subscriber::fmt::Subscriber;
 
 #[derive(Parser)]
@@ -19,9 +18,7 @@ struct Config {
 async fn main() {
     let args = Config::parse();
     let url = args.server_url;
-    let src_folder = args.upload_dir;
-
-    let mut client = ClientApp::new(url.as_str());
+    let src_folder: &Path = args.upload_dir.as_ref();
 
     let subscriber = Subscriber::builder()
         .with_max_level(tracing::Level::INFO)
@@ -33,35 +30,8 @@ async fn main() {
 
     info!(
         "Start client with source folder: {:?}, server_url: {}",
-        src_folder, url
+        &src_folder, url
     );
 
-    // read all files from folder
-    let files: Vec<(OsString, String)> = fs::read_dir(src_folder)
-        .expect("empty folder")
-        .filter_map(|entry| {
-            entry.ok().and_then(|e| {
-                if e.file_type().ok()?.is_file() {
-                    e.path().to_str().map(|s| (e.file_name(), s.to_string()))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect();
-
-    // Upload files to server
-    if let Err(err) = client.upload_files(&files).await {
-        error!("Error uploading: {:?}", err);
-        return;
-    }
-
-    // Download and verify each of the uploaded file
-    for (file_index, _) in files.iter().enumerate() {
-        if let Err(err) =
-            client.download_and_verify(&file_index.to_string()).await
-        {
-            error!("Error downloading file: {:?}", err);
-        }
-    }
+    prompt::run_loop(url, src_folder).await;
 }

@@ -235,8 +235,8 @@ async fn download_proof(
 
     info!(event = "proof downloaded", file_path, index);
 
-    return Ok(warp::reply::with_status(
+    Ok(warp::reply::with_status(
         proof_bytes,
         warp::http::StatusCode::OK,
-    ));
+    ))
 }
