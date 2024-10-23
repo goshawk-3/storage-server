@@ -31,10 +31,8 @@ impl ClientBucket {
         }
     }
 
-    /// Adds a file to the bucket and recalculates the Merkle tree
-    async fn calculate_merkle_tree(&mut self, file: String) {
-        self.files.push(file);
-
+    /// Calculates the Merkle tree
+    async fn calculate_merkle_tree(&mut self) {
         let mut leaves = Vec::new();
         // Hash each file
         for file_path in &self.files {
@@ -81,15 +79,23 @@ pub struct ServerState {
 pub async fn run_server(addr: &str) {
     let state = Arc::new(RwLock::new(ServerState::default()));
 
-    // File upload
+    // File upload_file
     // POST /upload/:bucket_id/:file_id
-    let upload = warp::path("upload")
+    let upload = warp::path("upload_file")
         .and(warp::post())
         .and(warp::path::param())
         .and(warp::path::param())
         .and(warp::body::bytes())
         .and(with_state(state.clone()))
         .and_then(handle_upload_file);
+
+    // File complete_upload
+    // POST /upload/:bucket_id/
+    let complete_upload = warp::path("complete_upload")
+        .and(warp::post())
+        .and(warp::path::param())
+        .and(with_state(state.clone()))
+        .and_then(handle_complete_upload);
 
     // File request
     // GET /file/:bucket_id/:file_id
@@ -111,7 +117,9 @@ pub async fn run_server(addr: &str) {
 
     let addr: SocketAddr = addr.parse().expect("parsable address");
 
-    warp::serve(upload.or(download).or(proof)).run(addr).await;
+    warp::serve(upload.or(complete_upload).or(download).or(proof))
+        .run(addr)
+        .await;
 }
 
 fn with_state(
@@ -121,6 +129,33 @@ fn with_state(
     Error = std::convert::Infallible,
 > + Clone {
     warp::any().map(move || state.clone())
+}
+
+/// Handles handle_complete_upload request
+async fn handle_complete_upload(
+    bucket_id: String,
+    state: Arc<RwLock<ServerState>>,
+) -> Result<impl warp::Reply, warp::Rejection> {
+    let mut guard = state.write().await;
+    let bucket = guard
+        .buckets
+        .entry(bucket_id.clone())
+        .or_insert(ClientBucket::new(bucket_id.clone()));
+
+    let bucket_dir = bucket.create_dir().await.expect("valid bucket dir");
+    info!(request = "complete upload", bucket_dir);
+
+    bucket.calculate_merkle_tree().await;
+
+    if let Some(root) = bucket.merkle_tree.root_hash() {
+        let root_hex = hex::encode(root);
+        info!(event = "complete upload", bucket_id, root = root_hex);
+    }
+
+    Ok(warp::reply::with_status(
+        "File upload completed",
+        warp::http::StatusCode::OK,
+    ))
 }
 
 /// Handles file upload request
@@ -164,15 +199,9 @@ async fn handle_upload_file(
         ));
     }
 
-    bucket.calculate_merkle_tree(file_path.clone()).await;
+    bucket.files.push(file_path.clone());
 
-    info!(
-        event = "file uploaded",
-        file_path,
-        bucket_id,
-        file_id,
-        leaves_count = bucket.merkle_tree.leaves_count()
-    );
+    info!(event = "file uploaded", file_path, bucket_id, file_id,);
 
     Ok(warp::reply::with_status(
         "File uploaded",
