@@ -8,19 +8,16 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-tokio = { version = "1.32", features = ["full"] }
+tokio = { version = "1.41", features = ["full"] }
 sha2 = "0.10" 
-hyper = { version = "1.5", features = ["full"] }
+hyper = { version = "0.14" }
 warp = "0.3"
 bincode = "1.3"
-bytes = "1.4"
+bytes = "1.8"
 log = "0.4"
-env_logger = "0.11.5"
-structopt = "0.3"
-
 clap = { version="4.5.20", features = ["derive"] }
 tracing = "=0.1.40"
-tracing-subscriber = { version = "0.3.*", features = [
+tracing-subscriber = { version = "0.3", features = [
     "fmt",
     "env-filter",
     "json",
