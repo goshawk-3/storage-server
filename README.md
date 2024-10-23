@@ -38,7 +38,7 @@ REST APIs
 verify_merkle_proof_100000 time:   [1.2044 µs 1.2055 µs 1.2069 µs]
 ```
 
-## Example HTTP Client
+## A HTTP-based Client with async-upload
 
 Features:
 
