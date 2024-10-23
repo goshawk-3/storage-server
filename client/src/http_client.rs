@@ -5,13 +5,15 @@ use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::ChaCha20;
 use rand::{self, RngCore};
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::task::JoinSet;
 use tracing::{error, info};
-use warp::reply::Response;
 
 use merkle::tree as merkle;
 use merkle::Hash;
@@ -28,6 +30,8 @@ enum Error {
     MissingMerkleRoot,
     #[error("failed to download resource {0}: index: {1} status: {2}")]
     FailedDownload(String, String, StatusCode),
+    #[error("failed to upload filename: {0}")]
+    FailUpload(String),
 }
 
 pub struct ClientApp {
@@ -93,86 +97,69 @@ impl ClientApp {
         Ok(())
     }
 
-    /// Encrypt and upload a file to the storage server
-    ///
-    /// Returns the hash of the encrypted file and the response from the server
-    async fn encrypt_and_upload(
-        &self,
-        file_path: &String,
-        file_id: &String,
-    ) -> Result<(Hash, Response), Box<dyn std::error::Error>> {
-        let http_client = Client::new();
-
-        info!(event = "encrypting file", file = file_id, file_path);
-        let mut data = fs::read(file_path)?;
-
-        // encrypt the file with ChaCha20
-        let mut cipher = ChaCha20::new(&CHACHA_KEY.into(), &[0x24; 12].into());
-        cipher.apply_keystream(&mut data);
-
-        let hash: [u8; 32] = Sha256::digest(&data).into();
-
-        info!(event = "uploading a file", file = file_id);
-
-        // Upload the file to the storage server
-        let req = Request::builder()
-            .method(Method::POST)
-            .uri(format!(
-                "{}/upload/{}/{}",
-                self.server_url,
-                self.bucket_id(),
-                file_id
-            ))
-            .header("Content-Type", "application/octet-stream")
-            .body(Body::from(data))?;
-
-        Ok((hash, http_client.request(req).await?))
-    }
-
     /// Upload a batch of files to the storage server
     pub async fn upload_files(
         &mut self,
         files: &Vec<(OsString, String)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut leaves: Vec<Hash> = self.merkle_tree.leaves();
+        let leaves = Arc::new(Mutex::new(self.merkle_tree.leaves()));
 
-        // Upload files to the server
+        // Async upload of all files to the server
+        let mut async_clients = JoinSet::new();
+
         for (file, file_path) in files {
-            let path: &Path = Path::new(file_path);
-            let file_id = file.clone().into_string().unwrap();
+            let file_name = file.to_string_lossy().to_string();
+            let leaves = Arc::clone(&leaves);
+            let url = self.server_url.clone();
+            let bucket_id = self.bucket_id();
+            let file_path = file_path.clone();
 
-            // Upload an encrypted form of the file to the storage server
-            let (hash, res) =
-                self.encrypt_and_upload(file_path, &file_id).await?;
+            // Spawn a new task per a file upload
+            async_clients.spawn(async move {
+                match Self::encrypt_and_upload(
+                    &url,
+                    &bucket_id,
+                    file_name.clone(),
+                    &file_path,
+                )
+                .await
+                {
+                    Ok(hash) => {
+                        info!(event = "file uploaded", file_name);
+                        leaves.lock().await.push(hash);
 
-            let status = res.status();
-
-            if status == 200 {
-                info!(event = "uploaded file", file_id);
-                leaves.push(hash);
-
-                // File successfully uploaded. Delete local file
-                fs::remove_file(path)?;
-                info!(event = "local copy deleted ", file_id);
-            } else {
-                let body = hyper::body::to_bytes(res.into_body())
-                    .await
-                    .unwrap_or_default();
-                let reply =
-                    String::from_utf8(body.to_vec()).unwrap_or_default();
-
-                error!(
-                    event = "failed to upload",
-                    file_id,
-                    status = ?status,
-                    reply
-                );
-            }
+                        // Remove the file from the local repo
+                        fs::remove_file(file_path).expect("file removed");
+                    }
+                    Err(err) => {
+                        error!(
+                            event = "failed to upload file",
+                            file_name,
+                            ?err
+                        );
+                    }
+                }
+            });
         }
 
-        // Recalculate the Merkle tree for both old and new files
-        self.merkle_tree = merkle::Tree::build_from_leaves(leaves);
+        // Wait for all the uploaders to finish
+        async_clients.join_all().await;
+
+        // Instruct the server to close the upload session
+        self.close_upload().await;
+
+        // Recalculate the Merkle trees
+        self.merkle_tree =
+            merkle::Tree::build_from_leaves(leaves.lock().await.clone());
         self.persist_state()?;
+
+        if let Some(root_hex) = self.merkle_tree.root_hash() {
+            info!(
+                event = "completed upload",
+                bucket_id = self.bucket_id(),
+                root = hex::encode(root_hex)
+            );
+        }
 
         Ok(())
     }
@@ -249,6 +236,67 @@ impl ClientApp {
         info!(event = "valid file saved", file = path);
 
         Ok(())
+    }
+
+    /// Encrypt and upload a file to the storage server
+    ///
+    /// Returns the hash of the encrypted file on successful upload
+    async fn encrypt_and_upload(
+        url: &str,
+        bucket_id: &str,
+        file_name: String,
+        file_path: &String,
+    ) -> Result<Hash, Error> {
+        info!(event = "encrypting file", file_name, file_path);
+        let mut data = fs::read(file_path).expect("valid file path");
+
+        // encrypt the file with ChaCha20
+        let mut cipher = ChaCha20::new(&CHACHA_KEY.into(), &[0x24; 12].into());
+        cipher.apply_keystream(&mut data);
+
+        let hash: [u8; 32] = Sha256::digest(&data).into();
+        info!(event = "uploading a file", file_name);
+
+        // Upload the file to the storage server
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(format!("{}/upload_file/{}/{}", url, bucket_id, file_name))
+            .header("Content-Type", "application/octet-stream")
+            .body(Body::from(data))
+            .expect("TODO");
+
+        let http_client = Client::new();
+        let res = http_client.request(req).await.expect("valid request");
+
+        if res.status() != StatusCode::OK {
+            Err(Error::FailUpload(file_name))
+        } else {
+            info!(event = "file uploaded", file_name);
+            Ok(hash)
+        }
+    }
+
+    /// Terminates the upload session on the server
+    async fn close_upload(&self) {
+        let http_client = Client::new();
+        if let Ok(req) = Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "{}/complete_upload/{}",
+                self.server_url,
+                self.bucket_id()
+            ))
+            .header("Content-Type", "application/octet-stream")
+            .body(Body::empty())
+        {
+            let res = http_client.request(req).await.expect("response");
+
+            if res.status() != StatusCode::OK {
+                error!(event = "failed to close upload file");
+            } else {
+                info!(event = "file uploaded CLOSESD");
+            };
+        };
     }
 
     /// Downloads a blob/binary object from the storage server
