@@ -3,7 +3,7 @@
 
 ####  This server stores files in logical buckets. Each bucket maintains a Merkle tree, which enables on-demand Merkle proofs.
 
-REST APIs
+HTTP-based APIs
  
 - File Upload `POST /upload/:bucket_id/:file_name`
     - Upload a file to a specific bucket
