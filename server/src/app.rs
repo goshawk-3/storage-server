@@ -141,8 +141,11 @@ async fn upload_file(
 
     // Check if file already exists in the bucket
     if bucket.file_exists(&file_id).is_some() {
+        let reply = "file already uploaded";
+        error!(event = "failed to upload", file_id, bucket_id, reply);
+
         return Ok(warp::reply::with_status(
-            "File already uploaded",
+            reply,
             warp::http::StatusCode::BAD_REQUEST,
         ));
     }
