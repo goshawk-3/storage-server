@@ -24,11 +24,20 @@ impl Tree {
             combined.extend(h2.iter());
 
             let digest = Sha256::digest(&combined);
-            let hash: Hash = digest.into();
-
-            tree_level.push(hash);
+            tree_level.push(digest.into());
         }
+
         tree_level
+    }
+
+    /// Print tree levels
+    pub fn print(&self) {
+        for level in &self.levels {
+            for hash in level {
+                print!("{} ", hex::encode(&hash[0..4]));
+            }
+            println!();
+        }
     }
 
     /// Get the proof for a leaf node
@@ -46,7 +55,8 @@ impl Tree {
                     proof.push((level[pair_idx], is_left_node as u8))
                 }
                 std::cmp::Ordering::Equal => {
-                    proof.push((level[pair_idx - 1], 0))
+                    assert!(level.len() % 2 != 0);
+                    proof.push((level[pair_idx - 1], 0));
                 }
                 _ => panic!("Invalid index"),
             }
@@ -94,12 +104,16 @@ impl Tree {
             return Tree::default();
         }
 
-        let mut levels = vec![leaves];
+        let mut levels: Vec<Vec<[u8; 32]>> = vec![leaves];
         while levels.last().unwrap().len() > 1 {
             let next_level = Tree::build_next_level(levels.last().unwrap());
             levels.push(next_level);
         }
-        let root = levels.last().unwrap()[0];
+
+        let root_level = levels.last().unwrap();
+        let root = root_level[0];
+
+        assert!(root_level.len() == 1);
 
         Tree {
             root: Some(root),
