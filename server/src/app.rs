@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io;
 use std::{path::Path, sync::Arc};
 
@@ -18,7 +18,9 @@ const UPLOADS_DIR: &str = "./buckets";
 #[derive(Default, Clone)]
 struct ClientBucket {
     pub bucket_id: String,
-    pub files: Vec<String>,
+
+    /// Map file hash to file path
+    pub files: BTreeMap<[u8; 32], String>,
     pub merkle_tree: merkle::Tree,
 }
 
@@ -26,36 +28,19 @@ impl ClientBucket {
     fn new(bucket_id: String) -> Self {
         ClientBucket {
             bucket_id,
-            files: Vec::new(),
+            files: BTreeMap::new(),
             merkle_tree: merkle::Tree::default(),
         }
     }
 
     /// Calculates the Merkle tree
     async fn calculate_merkle_tree(&mut self) {
-        let mut leaves = Vec::new();
-        // Hash each file
-        for file_path in &self.files {
-            let data = fs::read(file_path).await.expect("valid file path");
-            let hash = Sha256::digest(&data);
-            leaves.push(hash.into());
-        }
-
+        let leaves: Vec<[u8; 32]> = self.files.keys().cloned().collect();
         self.merkle_tree = merkle::Tree::build_from_leaves(leaves);
     }
 
-    /// Returns position, if file_id exists
-    fn file_exists(&self, file_id: &str) -> Option<usize> {
-        self.files.iter().position(|file_path| {
-            let path = Path::new(file_path);
-            let f = path.file_name().unwrap().to_owned().into_string().unwrap();
-
-            f == file_id
-        })
-    }
-
     fn get_filepath(&self, index: usize) -> Option<&String> {
-        self.files.get(index)
+        self.files.iter().nth(index).map(|(_, path)| path)
     }
 
     /// Creates bucket folder if it does not exist
@@ -177,8 +162,10 @@ async fn handle_upload_file(
 
     info!(request = "upload", bucket_dir, file_id);
 
+    let file_hash = Sha256::digest(&body).into();
+
     // Check if file already exists in the bucket
-    if bucket.file_exists(&file_id).is_some() {
+    if bucket.files.contains_key(&file_hash) {
         let reply = "file already uploaded";
         error!(event = "failed to upload", file_id, bucket_id, reply);
 
@@ -199,7 +186,7 @@ async fn handle_upload_file(
         ));
     }
 
-    bucket.files.push(file_path.clone());
+    bucket.files.insert(file_hash, file_path.clone());
 
     info!(event = "file uploaded", file_path, bucket_id, file_id,);
 

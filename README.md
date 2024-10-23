@@ -8,6 +8,9 @@ REST APIs
 - File Upload `POST /upload/:bucket_id/:file_name`
     - Upload a file to a specific bucket
 
+- Complete Upload `POST /complete_upload/:bucket_id`
+    - Finalize a bucket upload 
+
 - File request `GET /file/:bucket_id/:file_index`
     - Retrieve a file by its index from a specified bucket.
 

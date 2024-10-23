@@ -7,6 +7,7 @@ use rand::{self, RngCore};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
@@ -102,12 +103,13 @@ impl ClientApp {
         &mut self,
         files: &Vec<(OsString, String)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let leaves = Arc::new(Mutex::new(self.merkle_tree.leaves()));
+        let sorted_leaves = BTreeSet::from_iter(self.merkle_tree.leaves());
+        let leaves = Arc::new(Mutex::new(sorted_leaves));
 
         // Async upload of all files to the server
         let mut async_clients = JoinSet::new();
 
-        for (file, file_path) in files {
+        for (file, file_path) in files.iter() {
             let file_name = file.to_string_lossy().to_string();
             let leaves = Arc::clone(&leaves);
             let url = self.server_url.clone();
@@ -126,7 +128,7 @@ impl ClientApp {
                 {
                     Ok(hash) => {
                         info!(event = "file uploaded", file_name);
-                        leaves.lock().await.push(hash);
+                        leaves.lock().await.insert(hash);
 
                         // Remove the file from the local repo
                         fs::remove_file(file_path).expect("file removed");
@@ -149,8 +151,8 @@ impl ClientApp {
         self.close_upload().await;
 
         // Recalculate the Merkle trees
-        self.merkle_tree =
-            merkle::Tree::build_from_leaves(leaves.lock().await.clone());
+        let new_leaves = Vec::from_iter(leaves.lock().await.iter().copied());
+        self.merkle_tree = merkle::Tree::build_from_leaves(new_leaves);
         self.persist_state()?;
 
         if let Some(root_hex) = self.merkle_tree.root_hash() {
