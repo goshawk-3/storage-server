@@ -1,7 +1,7 @@
 
 # Storage server
 
-###  This server stores files in logical buckets. Each bucket maintains a Merkle tree, which enables on-demand Merkle proofs.
+####  This server stores files in logical buckets. Each bucket maintains a Merkle tree, which enables on-demand Merkle proofs.
 
 REST APIs
  
@@ -9,7 +9,7 @@ REST APIs
     - Upload a file to a specific bucket
 
 - Complete Upload `POST /complete_upload/:bucket_id`
-    - Finalize a bucket upload 
+    - Finalize a bucket upload. This instructs the server to generate the Merkle Tree for uploaded files in a specified bucket. 
 
 - File request `GET /file/:bucket_id/:file_index`
     - Retrieve a file by its index from a specified bucket.
@@ -38,17 +38,15 @@ REST APIs
 verify_merkle_proof_100000 time:   [1.2044 µs 1.2055 µs 1.2069 µs]
 ```
 
-
-
 ## Example HTTP Client
 
 Features:
 
-- Uploads all files from a source folder to the server in encrypted form.
-- Maintains a Merkle root of the uploaded files.
-- Requests both a file and its Merkle proof from the server.
+- Upload **concurrently** all files from a source folder to the server in encrypted form.
+- Maintain a Merkle root of the successfully uploaded files.
+- Request both a file and its Merkle proof from the server.
 - If the proof is valid, the client decrypts the file and stores it locally.
-- Simple prompt
+- Simple UI prompt
 
 ## How to run
 
