@@ -30,16 +30,6 @@ impl Tree {
         tree_level
     }
 
-    /// Print tree levels
-    pub fn print(&self) {
-        for level in &self.levels {
-            for hash in level {
-                print!("{} ", hex::encode(&hash[0..4]));
-            }
-            println!();
-        }
-    }
-
     /// Get the proof for a leaf node
     ///
     /// The proof is a list of tuples containing the sibling hash and a boolean indicating if the sibling is a left node
@@ -133,6 +123,17 @@ impl Tree {
     /// Returns a copy of the leaves in the tree
     pub fn leaves(&self) -> Vec<Hash> {
         self.levels.first().unwrap_or(&vec![]).clone()
+    }
+
+    /// Print tree levels
+    #[cfg(test)]
+    pub fn print(&self) {
+        for level in &self.levels {
+            for hash in level {
+                print!("{} ", hex::encode(&hash[0..4]));
+            }
+            println!();
+        }
     }
 }
 
