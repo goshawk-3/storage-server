@@ -109,7 +109,11 @@ impl ClientApp {
         // Async upload of all files to the server
         let mut async_clients = JoinSet::new();
 
-        for (file, file_path) in files.iter() {
+        // Shuffle the files to test different order of uploads
+        // let mut files = files.clone();
+        // files.shuffle(&mut thread_rng());
+
+        for (file, file_path) in files {
             let file_name = file.to_string_lossy().to_string();
             let leaves = Arc::clone(&leaves);
             let url = self.server_url.clone();
