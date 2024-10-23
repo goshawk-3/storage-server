@@ -1,4 +1,6 @@
+use serde::ser::SerializeSeq;
 use sha2::{Digest, Sha256};
+
 pub type Hash = [u8; 32];
 pub type Level = Vec<Hash>;
 
@@ -113,11 +115,43 @@ impl Tree {
             0
         }
     }
+
+    /// Returns a copy of the leaves in the tree
+    pub fn leaves(&self) -> Vec<Hash> {
+        self.levels.first().unwrap_or(&vec![]).clone()
+    }
+}
+
+/// Serialize Tree leaves as a sequence
+impl serde::Serialize for Tree {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let leaves = self.leaves();
+        let mut ser = serializer.serialize_seq(Some(leaves.len()))?;
+        for leaf in leaves {
+            ser.serialize_element(&leaf)?;
+        }
+        ser.end()
+    }
+}
+
+/// Restores Tree from serialized data
+impl<'de> serde::Deserialize<'de> for Tree {
+    fn deserialize<D>(deserializer: D) -> Result<Tree, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let leaves = Vec::<Hash>::deserialize(deserializer)?;
+        Ok(Tree::build_from_leaves(leaves))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bincode;
     use rand::{self, RngCore};
 
     /// Tests merkle paths verification for trees with leaves count from 1 to 100
@@ -155,5 +189,29 @@ mod tests {
         // Test empty tree
         let mt = Tree::build_from_leaves(vec![]);
         assert!(mt.root_hash().is_none());
+    }
+
+    #[test]
+    fn test_serialize_tree() {
+        // Generate random hashes
+        let leaves: Vec<Hash> = (0..100)
+            .map(|_| {
+                let mut data = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut data[..]);
+                data
+            })
+            .collect();
+
+        let mt = Tree::build_from_leaves(leaves.clone());
+        let root = mt.root_hash().expect("valid root");
+
+        let serialized = bincode::serialize(&mt).unwrap();
+        assert!(!serialized.is_empty());
+
+        let de_tree: Tree = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(
+            de_tree.root_hash().expect("valid root after deserialize"),
+            root
+        );
     }
 }
