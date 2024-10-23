@@ -3,6 +3,7 @@ use hyper::{Body, Method, Request, StatusCode};
 
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::ChaCha20;
+use rand::{self, RngCore};
 use sha2::{Digest, Sha256};
 
 use std::ffi::OsString;
@@ -16,8 +17,7 @@ use merkle::tree as merkle;
 use merkle::Hash;
 
 pub(crate) const LOCAL_REPO: &str = "./local_repo";
-const TREE_FILE: &str = "./merkle_tree.bin";
-const BUCKET_ID: &str = "my_bucket_id";
+const STATE_FILE: &str = "state_file.bin";
 const CHACHA_KEY: [u8; 32] = [0x24; 32];
 
 #[derive(Debug, Error)]
@@ -31,35 +31,65 @@ enum Error {
 }
 
 pub struct ClientApp {
-    bucket_id: String,
-
     server_url: String,
-    merkle_tree: Option<merkle::Tree>,
+
+    bucket_id: [u8; 32],
+    merkle_tree: merkle::Tree,
 }
 
 impl ClientApp {
     pub fn new(server_url: &str) -> Self {
         // Load the Merkle tree from disk, if it exists
-        let merkle_tree = fs::read(TREE_FILE).map_or_else(
-            |_| {
-                info!(event = "no merkle tree found", file = TREE_FILE);
-                None
-            },
-            |bytes| {
-                let tree: merkle::Tree = bincode::deserialize(&bytes).ok()?;
-                info!(
-                    event = "loaded merkle tree",
-                    leaves = tree.leaves().len()
-                );
-                Some(tree)
-            },
-        );
+        let (bucket_id, merkle_tree) = Self::read_from_file();
 
         ClientApp {
-            bucket_id: BUCKET_ID.to_owned(),
+            bucket_id,
             server_url: server_url.to_owned(),
             merkle_tree,
         }
+    }
+
+    /// Loads both bucket_id and the Merkle tree from disk, if STATE_FILE exists
+    ///
+    /// If state file is not found then a new bucket id is generated
+    pub fn read_from_file() -> ([u8; 32], merkle::Tree) {
+        fs::read(STATE_FILE).map_or_else(
+            |_| {
+                info!(event = "no state found", file = STATE_FILE);
+                let mut bucket_id = [0u8; 32];
+                rand::thread_rng().fill_bytes(&mut bucket_id[..]);
+                info!(
+                    event = "new bucket id",
+                    bucket_id = hex::encode(bucket_id)
+                );
+
+                (bucket_id, merkle::Tree::default())
+            },
+            |bytes| {
+                let s: State =
+                    bincode::deserialize(&bytes).expect("valid state file");
+
+                info!(
+                    event = "loaded state from disk",
+                    leaves = s.merkle_tree.leaves().len(),
+                    bucket_id = hex::encode(s.bucket_id)
+                );
+
+                (s.bucket_id, s.merkle_tree)
+            },
+        )
+    }
+
+    pub fn persist_state(&self) -> Result<(), Box<dyn std::error::Error>> {
+        fs::write(
+            STATE_FILE,
+            bincode::serialize(&State {
+                merkle_tree: self.merkle_tree.clone(),
+                bucket_id: self.bucket_id,
+            })?,
+        )?;
+        info!(event = "state saved on disk", file = STATE_FILE);
+        Ok(())
     }
 
     /// Encrypt and upload a file to the storage server
@@ -88,7 +118,9 @@ impl ClientApp {
             .method(Method::POST)
             .uri(format!(
                 "{}/upload/{}/{}",
-                self.server_url, self.bucket_id, file_id
+                self.server_url,
+                self.bucket_id(),
+                file_id
             ))
             .header("Content-Type", "application/octet-stream")
             .body(Body::from(data))?;
@@ -101,10 +133,7 @@ impl ClientApp {
         &mut self,
         files: &Vec<(OsString, String)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut leaves: Vec<Hash> = self
-            .merkle_tree
-            .as_ref()
-            .map_or_else(Vec::new, |t| t.leaves());
+        let mut leaves: Vec<Hash> = self.merkle_tree.leaves();
 
         // Upload files to the server
         for (file, file_path) in files {
@@ -115,7 +144,9 @@ impl ClientApp {
             let (hash, res) =
                 self.encrypt_and_upload(file_path, &file_id).await?;
 
-            if res.status() == 200 {
+            let status = res.status();
+
+            if status == 200 {
                 info!(event = "uploaded file", file_id);
                 leaves.push(hash);
 
@@ -123,28 +154,24 @@ impl ClientApp {
                 fs::remove_file(path)?;
                 info!(event = "local copy deleted ", file_id);
             } else {
-
-                
+                let body = hyper::body::to_bytes(res.into_body())
+                    .await
+                    .unwrap_or_default();
+                let reply =
+                    String::from_utf8(body.to_vec()).unwrap_or_default();
 
                 error!(
                     event = "failed to upload",
                     file_id,
-                    status = ?res.status()
+                    status = ?status,
+                    reply
                 );
             }
         }
 
         // Recalculate the Merkle tree for both old and new files
-        let count = leaves.len();
-        self.merkle_tree = Some(merkle::Tree::build_from_leaves(leaves));
-
-        info!(event = "merkle tree updated", leaves = count);
-
-        // Save on disk
-        let bytes = bincode::serialize(&self.merkle_tree)?;
-
-        fs::write(Path::new(TREE_FILE), bytes)?;
-        info!(event = "save merkle tree on-disk", file = TREE_FILE);
+        self.merkle_tree = merkle::Tree::build_from_leaves(leaves);
+        self.persist_state()?;
 
         Ok(())
     }
@@ -174,7 +201,7 @@ impl ClientApp {
 
         // Verify the file with the proof
         self.verify(proof, &hash).await?;
-        self.decrypt_and_save_file(file_index, &file_data)?;
+        self.decrypt_and_save_file(&hash, &file_data)?;
 
         Ok(())
     }
@@ -185,9 +212,7 @@ impl ClientApp {
         proof: Vec<(Hash, u8)>,
         hash: &Hash,
     ) -> Result<(), Error> {
-        if let Some(merkle_root) =
-            self.merkle_tree.as_ref().and_then(|t| t.root_hash())
-        {
+        if let Some(merkle_root) = self.merkle_tree.root_hash() {
             info!(
                 event = "checking proof",
                 hash = hex::encode(hash),
@@ -207,9 +232,10 @@ impl ClientApp {
     }
 
     /// Decrypt and save the file to the downloads folder
+    /// File is named after the hash of the file
     fn decrypt_and_save_file(
         &self,
-        file_id: &String,
+        file_id: &[u8],
         data: &[u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut cipher = ChaCha20::new(&CHACHA_KEY.into(), &[0x24; 12].into());
@@ -217,7 +243,7 @@ impl ClientApp {
         cipher.apply_keystream(&mut data);
 
         let _ = fs::create_dir_all(LOCAL_REPO);
-        let path = format!("{}/{}", LOCAL_REPO, file_id);
+        let path = format!("{}/{}", LOCAL_REPO, hex::encode(file_id));
 
         fs::write(Path::new(&path), data)?;
         info!(event = "valid file saved", file = path);
@@ -236,7 +262,10 @@ impl ClientApp {
             .get(
                 format!(
                     "{}/{}/{}/{}",
-                    self.server_url, resource, self.bucket_id, file_index
+                    self.server_url,
+                    resource,
+                    self.bucket_id(),
+                    file_index
                 )
                 .parse()?,
             )
@@ -258,4 +287,14 @@ impl ClientApp {
 
         Ok(bytes)
     }
+
+    fn bucket_id(&self) -> String {
+        hex::encode(self.bucket_id)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct State {
+    merkle_tree: merkle::Tree,
+    bucket_id: [u8; 32],
 }
