@@ -17,17 +17,18 @@ struct Config {
 #[tokio::main]
 async fn main() {
     let args = Config::parse();
-    let url = args.server_url;
-    let src_folder: &Path = args.source_dir.as_ref();
 
-    let subscriber = Subscriber::builder()
+    let s = Subscriber::builder()
         .with_max_level(tracing::Level::INFO)
         .with_writer(std::io::stderr);
 
-    let subscriber = subscriber.json().flatten_event(true).finish();
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("default subscriber failed");
+    tracing::subscriber::set_global_default(
+        s.json().flatten_event(true).finish(),
+    )
+    .expect("valid default subscriber");
 
+    let url = args.server_url;
+    let src_folder: &Path = args.source_dir.as_ref();
     info!(
         "Start client with source folder: {:?}, server_url: {}",
         &src_folder, url

@@ -39,7 +39,7 @@ pub struct ClientApp {
 
 impl ClientApp {
     pub fn new(server_url: &str) -> Self {
-        // Load the Merkle tree from disk, if it exists
+        // Load state from disk
         let (bucket_id, merkle_tree) = Self::read_from_file();
 
         ClientApp {
@@ -80,6 +80,7 @@ impl ClientApp {
         )
     }
 
+    /// Persist the current state to disk
     pub fn persist_state(&self) -> Result<(), Box<dyn std::error::Error>> {
         fs::write(
             STATE_FILE,
@@ -206,7 +207,7 @@ impl ClientApp {
         Ok(())
     }
 
-    /// Verify the downloaded merkle path for a file
+    /// Verify the provided merkle path for a file
     async fn verify(
         &self,
         proof: Vec<(Hash, u8)>,
@@ -220,7 +221,6 @@ impl ClientApp {
                 merkle_root = hex::encode(merkle_root)
             );
 
-            // Verify the file with the proof
             if !merkle::Tree::verify_proof(hash, &proof, &merkle_root) {
                 return Err(Error::InvalidProof);
             }
@@ -232,7 +232,7 @@ impl ClientApp {
     }
 
     /// Decrypt and save the file to the downloads folder
-    /// File is named after the hash of the file
+    /// File is named after the hash of the content
     fn decrypt_and_save_file(
         &self,
         file_id: &[u8],
@@ -255,30 +255,27 @@ impl ClientApp {
     async fn download_blob(
         &self,
         file_index: &str,
-        resource: &str,
+        resource_type: &str,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let uri = format!(
+            "{}/{}/{}/{}",
+            self.server_url,
+            resource_type,
+            self.bucket_id(),
+            file_index
+        );
+
         let client = Client::new();
-        let mut res = client
-            .get(
-                format!(
-                    "{}/{}/{}/{}",
-                    self.server_url,
-                    resource,
-                    self.bucket_id(),
-                    file_index
-                )
-                .parse()?,
-            )
-            .await?;
+        let mut res = client.get(uri.parse()?).await?;
 
         let mut bytes = Vec::new();
         while let Some(chunk) = res.data().await {
             bytes.extend_from_slice(&chunk?);
         }
 
-        if res.status() != 200 {
+        if res.status() != hyper::StatusCode::OK {
             return Err(Error::FailedDownload(
-                resource.to_owned(),
+                resource_type.to_owned(),
                 file_index.to_owned(),
                 res.status(),
             )

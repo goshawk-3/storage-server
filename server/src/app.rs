@@ -46,7 +46,7 @@ impl ClientBucket {
         self.merkle_tree = merkle::Tree::build_from_leaves(leaves);
     }
 
-    /// Returns position, if exists
+    /// Returns position, if file_id exists
     fn file_exists(&self, file_id: &str) -> Option<usize> {
         self.files.iter().position(|file_path| {
             let path = Path::new(file_path);
@@ -74,7 +74,7 @@ impl ClientBucket {
 
 #[derive(Default, Clone)]
 pub struct ServerState {
-    /// Bucket id to a Bucket
+    /// Map a Bucket id to a (MerkleTree, files) pair
     buckets: HashMap<String, ClientBucket>,
 }
 
@@ -89,7 +89,7 @@ pub async fn run_server(addr: &str) {
         .and(warp::path::param())
         .and(warp::body::bytes())
         .and(with_state(state.clone()))
-        .and_then(upload_file);
+        .and_then(handle_upload_file);
 
     // File request
     // GET /file/:bucket_id/:file_id
@@ -98,7 +98,7 @@ pub async fn run_server(addr: &str) {
         .and(warp::path::param())
         .and(warp::path::param())
         .and(with_state(state.clone()))
-        .and_then(download_file);
+        .and_then(handle_download_file);
 
     // Proof request
     // GET /proof/:bucket_id/:file_id
@@ -107,9 +107,9 @@ pub async fn run_server(addr: &str) {
         .and(warp::path::param())
         .and(warp::path::param())
         .and(with_state(state.clone()))
-        .and_then(download_proof);
+        .and_then(handle_download_proof);
 
-    let addr: SocketAddr = addr.parse().expect("expect parsable address");
+    let addr: SocketAddr = addr.parse().expect("parsable address");
 
     warp::serve(upload.or(download).or(proof)).run(addr).await;
 }
@@ -123,7 +123,10 @@ fn with_state(
     warp::any().map(move || state.clone())
 }
 
-async fn upload_file(
+/// Handles file upload request
+///
+/// Duplicated files per a bucket are not allowed
+async fn handle_upload_file(
     bucket_id: String,
     file_id: String,
     body: bytes::Bytes,
@@ -177,7 +180,10 @@ async fn upload_file(
     ))
 }
 
-async fn download_file(
+/// Handles file download request
+///
+/// Returns `404 Not Found` if the (bucket_id-file_index) does not exist
+async fn handle_download_file(
     bucket_id: String,
     file_index: String,
     state: Arc<RwLock<ServerState>>,
@@ -208,7 +214,10 @@ async fn download_file(
     Ok(warp::reply::with_status(data, warp::http::StatusCode::OK))
 }
 
-async fn download_proof(
+/// Handles proof download request
+///
+/// Returns `404 Not Found` if the (bucket_id-file_index) does not exist
+async fn handle_download_proof(
     bucket_id: String,
     file_index: String,
     state: Arc<RwLock<ServerState>>,
