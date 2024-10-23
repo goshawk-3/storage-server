@@ -3,7 +3,6 @@ use hyper::{Body, Method, Request, StatusCode};
 
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::ChaCha20;
-use secp256k1::{rand, Keypair, PublicKey, Secp256k1};
 use sha2::{Digest, Sha256};
 
 use std::ffi::OsString;
@@ -17,6 +16,9 @@ use merkle::tree as merkle;
 use merkle::Hash;
 
 pub(crate) const LOCAL_REPO: &str = "./local_repo";
+const TREE_FILE: &str = "./merkle_tree.bin";
+const BUCKET_ID: &str = "my_bucket_id";
+const CHACHA_KEY: [u8; 32] = [0x24; 32];
 
 #[derive(Debug, Error)]
 enum Error {
@@ -29,30 +31,34 @@ enum Error {
 }
 
 pub struct ClientApp {
-    keypair: Keypair,
     bucket_id: String,
 
     server_url: String,
-    merkle_root: Option<Hash>,
+    merkle_tree: Option<merkle::Tree>,
 }
 
 impl ClientApp {
     pub fn new(server_url: &str) -> Self {
-        let secp = Secp256k1::new();
-        let keypair = Keypair::new(&secp, &mut rand::thread_rng());
-        let public_key = PublicKey::from_keypair(&keypair);
-
-        let pubkey: String = public_key
-            .serialize()
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect();
+        // Load the Merkle tree from disk, if it exists
+        let merkle_tree = fs::read(TREE_FILE).map_or_else(
+            |_| {
+                info!(event = "no merkle tree found", file = TREE_FILE);
+                None
+            },
+            |bytes| {
+                let tree: merkle::Tree = bincode::deserialize(&bytes).ok()?;
+                info!(
+                    event = "loaded merkle tree",
+                    leaves = tree.leaves().len()
+                );
+                Some(tree)
+            },
+        );
 
         ClientApp {
-            bucket_id: pubkey,
+            bucket_id: BUCKET_ID.to_owned(),
             server_url: server_url.to_owned(),
-            merkle_root: None,
-            keypair,
+            merkle_tree,
         }
     }
 
@@ -70,8 +76,7 @@ impl ClientApp {
         let mut data = fs::read(file_path)?;
 
         // encrypt the file with ChaCha20
-        let key = self.keypair.secret_bytes();
-        let mut cipher = ChaCha20::new(&key.into(), &[0x24; 12].into());
+        let mut cipher = ChaCha20::new(&CHACHA_KEY.into(), &[0x24; 12].into());
         cipher.apply_keystream(&mut data);
 
         let hash: [u8; 32] = Sha256::digest(&data).into();
@@ -91,11 +96,15 @@ impl ClientApp {
         Ok((hash, http_client.request(req).await?))
     }
 
+    /// Upload a batch of files to the storage server
     pub async fn upload_files(
         &mut self,
         files: &Vec<(OsString, String)>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let mut uploaded_files: Vec<Hash> = vec![];
+        let mut leaves: Vec<Hash> = self
+            .merkle_tree
+            .as_ref()
+            .map_or_else(Vec::new, |t| t.leaves());
 
         // Upload files to the server
         for (file, file_path) in files {
@@ -108,12 +117,15 @@ impl ClientApp {
 
             if res.status() == 200 {
                 info!(event = "uploaded file", file_id);
-                uploaded_files.push(hash);
+                leaves.push(hash);
 
                 // File successfully uploaded. Delete local file
                 fs::remove_file(path)?;
                 info!(event = "local copy deleted ", file_id);
             } else {
+
+                
+
                 error!(
                     event = "failed to upload",
                     file_id,
@@ -122,11 +134,17 @@ impl ClientApp {
             }
         }
 
-        // Build the Merkle tree for all uploaded files
-        if !uploaded_files.is_empty() {
-            self.merkle_root =
-                merkle::Tree::build_from_leaves(uploaded_files).root_hash();
-        }
+        // Recalculate the Merkle tree for both old and new files
+        let count = leaves.len();
+        self.merkle_tree = Some(merkle::Tree::build_from_leaves(leaves));
+
+        info!(event = "merkle tree updated", leaves = count);
+
+        // Save on disk
+        let bytes = bincode::serialize(&self.merkle_tree)?;
+
+        fs::write(Path::new(TREE_FILE), bytes)?;
+        info!(event = "save merkle tree on-disk", file = TREE_FILE);
 
         Ok(())
     }
@@ -140,9 +158,7 @@ impl ClientApp {
         file_index: &String,
     ) -> Result<(), Box<dyn std::error::Error>> {
         // Download the file
-        let file_data = self
-            .download_blob(file_index.clone(), "file".to_owned())
-            .await?;
+        let file_data = self.download_blob(file_index, "file").await?;
         let hash: Hash = Sha256::digest(&file_data).into();
         info!(
             event = "file data received",
@@ -152,9 +168,7 @@ impl ClientApp {
 
         // Download the proof
         info!(event = "request proof", file_index);
-        let bytes = self
-            .download_blob(file_index.clone(), "proof".to_owned())
-            .await?;
+        let bytes = self.download_blob(file_index, "proof").await?;
 
         let proof: Vec<([u8; 32], u8)> = bincode::deserialize(&bytes)?;
 
@@ -171,7 +185,9 @@ impl ClientApp {
         proof: Vec<(Hash, u8)>,
         hash: &Hash,
     ) -> Result<(), Error> {
-        if let Some(merkle_root) = self.merkle_root {
+        if let Some(merkle_root) =
+            self.merkle_tree.as_ref().and_then(|t| t.root_hash())
+        {
             info!(
                 event = "checking proof",
                 hash = hex::encode(hash),
@@ -196,8 +212,7 @@ impl ClientApp {
         file_id: &String,
         data: &[u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let key = self.keypair.secret_bytes();
-        let mut cipher = ChaCha20::new(&key.into(), &[0x24; 12].into());
+        let mut cipher = ChaCha20::new(&CHACHA_KEY.into(), &[0x24; 12].into());
         let mut data = data.to_owned();
         cipher.apply_keystream(&mut data);
 
@@ -213,8 +228,8 @@ impl ClientApp {
     /// Downloads a blob/binary object from the storage server
     async fn download_blob(
         &self,
-        file_index: String,
-        resource: String,
+        file_index: &str,
+        resource: &str,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let client = Client::new();
         let mut res = client
@@ -234,8 +249,8 @@ impl ClientApp {
 
         if res.status() != 200 {
             return Err(Error::FailedDownload(
-                resource,
-                file_index.clone(),
+                resource.to_owned(),
+                file_index.to_owned(),
                 res.status(),
             )
             .into());
