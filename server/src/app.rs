@@ -65,7 +65,7 @@ pub async fn run_server(addr: &str) {
     let state = Arc::new(RwLock::new(ServerState::default()));
 
     // File upload_file
-    // POST /upload/:bucket_id/:file_id
+    // POST /upload/:bucket_id/:filename
     let upload = warp::path("upload_file")
         .and(warp::post())
         .and(warp::path::param())
@@ -83,7 +83,7 @@ pub async fn run_server(addr: &str) {
         .and_then(handle_complete_upload);
 
     // File request
-    // GET /file/:bucket_id/:file_id
+    // GET /file/:bucket_id/:file_index
     let download = warp::path("file")
         .and(warp::get())
         .and(warp::path::param())
@@ -92,7 +92,7 @@ pub async fn run_server(addr: &str) {
         .and_then(handle_download_file);
 
     // Proof request
-    // GET /proof/:bucket_id/:file_id
+    // GET /proof/:bucket_id/:file_index
     let proof = warp::path("proof")
         .and(warp::get())
         .and(warp::path::param())
@@ -148,7 +148,7 @@ async fn handle_complete_upload(
 /// Duplicated files per a bucket are not allowed
 async fn handle_upload_file(
     bucket_id: String,
-    file_id: String,
+    filename: String,
     body: bytes::Bytes,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
@@ -160,14 +160,14 @@ async fn handle_upload_file(
 
     let bucket_dir = bucket.create_dir().await.expect("valid bucket dir");
 
-    info!(request = "upload", bucket_dir, file_id);
+    info!(request = "upload", bucket_dir, filename);
 
     let file_hash = Sha256::digest(&body).into();
 
     // Check if file already exists in the bucket
     if bucket.files.contains_key(&file_hash) {
         let reply = "file already uploaded";
-        error!(event = "failed to upload", file_id, bucket_id, reply);
+        error!(event = "failed to upload", filename, bucket_id, reply);
 
         return Ok(warp::reply::with_status(
             reply,
@@ -176,9 +176,9 @@ async fn handle_upload_file(
     }
 
     // Save the file on disk
-    let file_path: String = format!("{}/{}", bucket_dir, file_id);
+    let file_path: String = format!("{}/{}", bucket_dir, filename);
     if let Err(err) = fs::write(file_path.clone(), body).await {
-        error!(event = "Failed to write file", file_id, bucket_id, error = ?err);
+        error!(event = "Failed to write file", filename, bucket_id, error = ?err);
 
         return Ok(warp::reply::with_status(
             "Failed to write file",
@@ -188,7 +188,7 @@ async fn handle_upload_file(
 
     bucket.files.insert(file_hash, file_path.clone());
 
-    info!(event = "file uploaded", file_path, bucket_id, file_id,);
+    info!(event = "file uploaded", file_path, bucket_id, filename);
 
     Ok(warp::reply::with_status(
         "File uploaded",
