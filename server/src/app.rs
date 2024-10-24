@@ -44,7 +44,7 @@ impl ClientBucket {
     }
 
     /// Creates bucket folder if it does not exist
-    async fn create_dir(&self) -> io::Result<String> {
+    async fn get_or_create_dir(&self) -> io::Result<String> {
         let bucket_dir: String = self.get_dir();
         fs::create_dir_all(&bucket_dir).await?;
         Ok(bucket_dir)
@@ -117,6 +117,8 @@ fn with_state(
 }
 
 /// Handles handle_complete_upload request
+///
+/// Completes a async-upload of bucket of files by calculating the Merkle tree
 async fn handle_complete_upload(
     bucket_id: String,
     state: Arc<RwLock<ServerState>>,
@@ -127,7 +129,8 @@ async fn handle_complete_upload(
         .entry(bucket_id.clone())
         .or_insert(ClientBucket::new(bucket_id.clone()));
 
-    let bucket_dir = bucket.create_dir().await.expect("valid bucket dir");
+    let bucket_dir =
+        bucket.get_or_create_dir().await.expect("valid bucket dir");
     info!(request = "complete upload", bucket_dir);
 
     bucket.calculate_merkle_tree().await;
@@ -158,7 +161,8 @@ async fn handle_upload_file(
         .entry(bucket_id.clone())
         .or_insert(ClientBucket::new(bucket_id.clone()));
 
-    let bucket_dir = bucket.create_dir().await.expect("valid bucket dir");
+    let bucket_dir =
+        bucket.get_or_create_dir().await.expect("valid bucket dir");
 
     info!(request = "upload", bucket_dir, filename);
 
