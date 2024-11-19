@@ -7,6 +7,7 @@ use std::{ffi::OsString, fs, io, path::Path};
 use tracing::error;
 
 pub(crate) enum Commands {
+    BucketID,
     ListFiles,
     UploadAll,
     DownloadFile(usize),
@@ -18,6 +19,7 @@ fn prompt() -> requestty::Result<Commands> {
     let answer = requestty::prompt_one(
         Question::select("command")
             .message("Client")
+            .choice("My Bucket ID")
             .choice("List available files")
             .choice("Upload all files")
             .choice("Download file by index")
@@ -27,9 +29,10 @@ fn prompt() -> requestty::Result<Commands> {
     )?;
 
     match answer.as_list_item().unwrap().index {
-        0 => Ok(Commands::ListFiles),
-        1 => Ok(Commands::UploadAll),
-        2 => {
+        0 => Ok(Commands::BucketID),
+        1 => Ok(Commands::ListFiles),
+        2 => Ok(Commands::UploadAll),
+        3 => {
             // Ask for the file index after selecting "Download file by index"
             let index_question = Question::int("index")
                 .message("Enter the file index to download")
@@ -54,8 +57,8 @@ fn prompt() -> requestty::Result<Commands> {
                 .into())
             }
         }
-        3 => Ok(Commands::ListDownloadedFiles),
-        4 => Ok(Commands::Exit),
+        4 => Ok(Commands::ListDownloadedFiles),
+        5 => Ok(Commands::Exit),
         _ => unreachable!(),
     }
 }
@@ -70,6 +73,11 @@ pub(crate) async fn run_loop(
     loop {
         match prompt().unwrap() {
             // List all files in the SRC folder
+            Commands::BucketID => {
+                println!("My bucket_id: {}", client.bucket_id());
+            }
+
+            // List all files in the SRC folder
             Commands::ListFiles => {
                 let files = read_files(src_folder);
                 for (index, file) in files.iter().enumerate() {
@@ -81,7 +89,6 @@ pub(crate) async fn run_loop(
                 let files = read_files(src_folder);
                 if let Err(err) = client.upload_files(&files).await {
                     error!("Error uploading: {:?}", err);
-                    return;
                 }
             }
             // Download a file by index

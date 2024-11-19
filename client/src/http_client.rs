@@ -361,7 +361,7 @@ impl ClientApp {
         Ok(bytes)
     }
 
-    fn bucket_id(&self) -> String {
+    pub(crate) fn bucket_id(&self) -> String {
         hex::encode(self.bucket_id)
     }
 }
