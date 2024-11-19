@@ -1,4 +1,6 @@
 mod app;
+mod client_bucket;
+mod database;
 
 use clap::Parser;
 use tracing_subscriber::fmt::Subscriber;

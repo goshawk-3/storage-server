@@ -1,5 +1,5 @@
-use std::collections::{BTreeMap, HashMap};
-use std::io;
+use std::collections::HashMap;
+
 use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
@@ -9,60 +9,53 @@ use tokio::sync::RwLock;
 use tracing::{error, info};
 use warp::Filter;
 
-use merkle::tree as merkle;
+use crate::{client_bucket::ClientBucket, database::DB};
 
-const UPLOADS_DIR: &str = "./buckets";
-
-/// Represents a bucket of files uploaded by a client together with calculated
-/// Merkle tree
-#[derive(Default, Clone)]
-struct ClientBucket {
-    pub bucket_id: String,
-
-    /// Map file hash to file path
-    pub files: BTreeMap<[u8; 32], String>,
-    pub merkle_tree: merkle::Tree,
-}
-
-impl ClientBucket {
-    fn new(bucket_id: String) -> Self {
-        ClientBucket {
-            bucket_id,
-            files: BTreeMap::new(),
-            merkle_tree: merkle::Tree::default(),
-        }
-    }
-
-    /// Calculates the Merkle tree
-    async fn calculate_merkle_tree(&mut self) {
-        let leaves: Vec<[u8; 32]> = self.files.keys().cloned().collect();
-        self.merkle_tree = merkle::Tree::build_from_leaves(leaves);
-    }
-
-    fn get_filepath(&self, index: usize) -> Option<&String> {
-        self.files.iter().nth(index).map(|(_, path)| path)
-    }
-
-    /// Creates bucket folder if it does not exist
-    async fn get_or_create_dir(&self) -> io::Result<String> {
-        let bucket_dir: String = self.get_dir();
-        fs::create_dir_all(&bucket_dir).await?;
-        Ok(bucket_dir)
-    }
-
-    fn get_dir(&self) -> String {
-        format!("{}/{}", UPLOADS_DIR, self.bucket_id)
-    }
-}
-
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct ServerState {
     /// Map a Bucket id to a (MerkleTree, files) pair
     buckets: HashMap<String, Arc<RwLock<ClientBucket>>>,
+    db: Arc<RwLock<DB>>,
+}
+
+impl ServerState {
+    fn load_buckets_from_db() -> Self {
+        //  Load buckets from the database
+        let db = DB::create_or_open("./db");
+        let buckets = db.read_all_buckets().expect("bucket is persisted");
+
+        let buckets = buckets
+            .into_iter()
+            .map(|(bucket_id, mut bucket)| {
+                info!(
+                    event = "load bucket from db",
+                    bucket_id,
+                    files_count = bucket.files.len()
+                );
+                bucket.calculate_merkle_tree();
+                (bucket_id, Arc::new(RwLock::new(bucket)))
+            })
+            .collect();
+
+        ServerState {
+            buckets,
+            db: Arc::new(RwLock::new(db)),
+        }
+    }
+
+    /// Persists the bucket to the database
+    async fn persist_bucket_lockless(
+        &self,
+        bucket: &ClientBucket,
+    ) -> Result<(), String> {
+        let db_handle = self.db.read().await;
+        db_handle.update_bucket(bucket)?;
+        db_handle.flush()
+    }
 }
 
 pub async fn run_server(addr: &str) {
-    let state = Arc::new(RwLock::new(ServerState::default()));
+    let state = Arc::new(RwLock::new(ServerState::load_buckets_from_db()));
 
     // File upload_file
     // POST /upload/:bucket_id/:filename
@@ -132,12 +125,20 @@ async fn handle_complete_upload(
         bucket.get_or_create_dir().await.expect("valid bucket dir");
     info!(request = "complete upload", bucket_dir);
 
-    bucket.calculate_merkle_tree().await;
+    bucket.calculate_merkle_tree();
 
     if let Some(root) = bucket.merkle_tree.root_hash() {
         let root_hex = hex::encode(root);
         info!(event = "complete upload", bucket_id, root = root_hex);
     }
+
+    info!(event = "persist new bucket state");
+    state
+        .read()
+        .await
+        .persist_bucket_lockless(&bucket)
+        .await
+        .expect("bucket is persisted");
 
     Ok(warp::reply::with_status(
         "File upload completed",
