@@ -58,7 +58,7 @@ impl ClientBucket {
 #[derive(Default, Clone)]
 pub struct ServerState {
     /// Map a Bucket id to a (MerkleTree, files) pair
-    buckets: HashMap<String, ClientBucket>,
+    buckets: HashMap<String, Arc<RwLock<ClientBucket>>>,
 }
 
 pub async fn run_server(addr: &str) {
@@ -123,11 +123,10 @@ async fn handle_complete_upload(
     bucket_id: String,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    let mut guard = state.write().await;
-    let bucket = guard
-        .buckets
-        .entry(bucket_id.clone())
-        .or_insert(ClientBucket::new(bucket_id.clone()));
+    let bucket: Arc<RwLock<ClientBucket>> =
+        get_or_create_bucket(bucket_id.clone(), state.clone()).await;
+
+    let mut bucket = bucket.write().await;
 
     let bucket_dir =
         bucket.get_or_create_dir().await.expect("valid bucket dir");
@@ -155,11 +154,10 @@ async fn handle_upload_file(
     body: bytes::Bytes,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    let mut guard = state.write().await;
-    let bucket = guard
-        .buckets
-        .entry(bucket_id.clone())
-        .or_insert(ClientBucket::new(bucket_id.clone()));
+    let bucket: Arc<RwLock<ClientBucket>> =
+        get_or_create_bucket(bucket_id.clone(), state.clone()).await;
+
+    let mut bucket = bucket.write().await;
 
     let bucket_dir =
         bucket.get_or_create_dir().await.expect("valid bucket dir");
@@ -208,15 +206,14 @@ async fn handle_download_file(
     file_index: String,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    let guard = state.read().await;
+    let bucket: Arc<RwLock<ClientBucket>> =
+        get_bucket(bucket_id.clone(), state.clone())
+            .await
+            .ok_or(warp::reject::not_found())?;
+
+    let bucket = bucket.read().await;
 
     info!(request = "download_file", bucket_id, file_index);
-
-    // Get bucket by id
-    let bucket = guard
-        .buckets
-        .get(&bucket_id)
-        .ok_or(warp::reject::not_found())?;
 
     let index = file_index
         .parse::<usize>()
@@ -242,15 +239,14 @@ async fn handle_download_proof(
     file_index: String,
     state: Arc<RwLock<ServerState>>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    let guard = state.read().await;
+    let bucket: Arc<RwLock<ClientBucket>> =
+        get_bucket(bucket_id.clone(), state.clone())
+            .await
+            .ok_or(warp::reject::not_found())?;
+
+    let bucket = bucket.read().await;
 
     info!(request = "download_proof", bucket_id, file_index);
-
-    // Get bucket by id
-    let bucket = guard
-        .buckets
-        .get(&bucket_id)
-        .ok_or(warp::reject::not_found())?;
 
     let index = file_index
         .parse::<usize>()
@@ -261,6 +257,7 @@ async fn handle_download_proof(
         .ok_or(warp::reject::not_found())?;
 
     // Generate merkle path for the file
+    //
     let proof: Vec<([u8; 32], u8)> = bucket.merkle_tree.get_proof(index);
     let proof_bytes =
         bincode::serialize(&proof).expect("valid proof serialization");
@@ -271,4 +268,41 @@ async fn handle_download_proof(
         proof_bytes,
         warp::http::StatusCode::OK,
     ))
+}
+
+/// Returns an existing bucket or creates a new one
+///
+/// This function tries to get a bucket from the state.
+/// If the bucket does not exist, it locks the entire state and creates a new bucket.
+async fn get_or_create_bucket(
+    bucket_id: String,
+    state: Arc<RwLock<ServerState>>,
+) -> Arc<RwLock<ClientBucket>> {
+    let res = get_bucket(bucket_id.clone(), state.clone()).await;
+
+    match res {
+        Some(bucket) => bucket,
+        None => {
+            // Lock the entire state and create a new bucket
+            let mut state_guard = state.write().await;
+
+            state_guard
+                .buckets
+                .entry(bucket_id.clone())
+                .or_insert(Arc::new(RwLock::new(ClientBucket::new(bucket_id))))
+                .clone()
+        }
+    }
+}
+
+/// Returns an existing bucket or none
+/// This function acquires only a read lock on the state
+async fn get_bucket(
+    bucket_id: String,
+    state: Arc<RwLock<ServerState>>,
+) -> Option<Arc<RwLock<ClientBucket>>> {
+    let state_guard = state.read().await;
+
+    // Get bucket by id
+    state_guard.buckets.get(&bucket_id).cloned()
 }
