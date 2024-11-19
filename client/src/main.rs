@@ -10,6 +10,7 @@ use tracing_subscriber::fmt::Subscriber;
 struct Config {
     /// Storage server URL
     server_url: String,
+    client_dir: String,
     /// The path to the folder to upload
     source_dir: std::path::PathBuf,
 }
@@ -29,10 +30,11 @@ async fn main() {
 
     let url = args.server_url;
     let src_folder: &Path = args.source_dir.as_ref();
+    let client_dir = args.client_dir.as_str();
     info!(
         "Start client with source folder: {:?}, server_url: {}",
         &src_folder, url
     );
 
-    prompt::run_loop(url, src_folder).await;
+    prompt::run_loop(url, src_folder, client_dir).await;
 }

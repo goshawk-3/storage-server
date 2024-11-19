@@ -19,8 +19,8 @@ use tracing::{error, info};
 use merkle::tree as merkle;
 use merkle::Hash;
 
-pub(crate) const LOCAL_REPO: &str = "./local_repo";
-const STATE_FILE: &str = "state_file.bin";
+pub(crate) const LOCAL_REPO: &str = "/downloaded_files";
+const STATE_FILE: &str = "/state_file.bin";
 const CHACHA_KEY: [u8; 32] = [0x24; 32];
 
 #[derive(Debug, Error)]
@@ -33,9 +33,12 @@ enum Error {
     FailedDownload(String, String, StatusCode),
     #[error("failed to upload filename: {0}")]
     FailUpload(String),
+    #[error("failed to finalize the upload")]
+    FailCloseUpload,
 }
 
 pub struct ClientApp {
+    folder: String,
     server_url: String,
 
     bucket_id: [u8; 32],
@@ -43,24 +46,27 @@ pub struct ClientApp {
 }
 
 impl ClientApp {
-    pub fn new(server_url: &str) -> Self {
+    pub fn new(server_url: &str, client_folder: &str) -> Self {
+        let _ = fs::create_dir(client_folder);
         // Load state from disk
-        let (bucket_id, merkle_tree) = Self::read_from_file();
+        let (bucket_id, merkle_tree) = Self::read_from_file(client_folder);
 
         ClientApp {
             bucket_id,
             server_url: server_url.to_owned(),
             merkle_tree,
+            folder: client_folder.to_owned(),
         }
     }
 
     /// Loads both bucket_id and the Merkle tree from disk, if STATE_FILE exists
     ///
     /// If state file is not found then a new bucket id is generated
-    pub fn read_from_file() -> ([u8; 32], merkle::Tree) {
-        fs::read(STATE_FILE).map_or_else(
+    pub fn read_from_file(client_folder: &str) -> ([u8; 32], merkle::Tree) {
+        let state_file = client_folder.to_owned() + STATE_FILE;
+        fs::read(&state_file).map_or_else(
             |_| {
-                info!(event = "no state found", file = STATE_FILE);
+                info!(event = "no state found", file = state_file);
                 let mut bucket_id = [0u8; 32];
                 rand::thread_rng().fill_bytes(&mut bucket_id[..]);
                 info!(
@@ -87,14 +93,15 @@ impl ClientApp {
 
     /// Persist the current state to disk
     pub fn persist_state(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let state_file_path = self.folder.clone() + STATE_FILE;
         fs::write(
-            STATE_FILE,
+            &state_file_path,
             bincode::serialize(&State {
                 merkle_tree: self.merkle_tree.clone(),
                 bucket_id: self.bucket_id,
             })?,
         )?;
-        info!(event = "state saved on disk", file = STATE_FILE);
+        info!(event = "state saved on disk", state_file_path);
         Ok(())
     }
 
@@ -152,17 +159,23 @@ impl ClientApp {
         async_clients.join_all().await;
 
         // Instruct the server to close the upload session
-        self.close_upload().await;
+        self.close_upload().await?;
 
         // Recalculate the Merkle trees
         let new_leaves = Vec::from_iter(leaves.lock().await.iter().copied());
-        self.merkle_tree = merkle::Tree::build_from_leaves(new_leaves);
+
+        new_leaves.iter().for_each(|l| {
+            info!(event = "new leaf", leaf = hex::encode(l));
+        });
+
+        self.merkle_tree = merkle::Tree::build_from_leaves(new_leaves.clone());
         self.persist_state()?;
 
         if let Some(root_hex) = self.merkle_tree.root_hash() {
             info!(
                 event = "completed upload",
                 bucket_id = self.bucket_id(),
+                leaves_count = new_leaves.len(),
                 root = hex::encode(root_hex)
             );
         }
@@ -235,8 +248,10 @@ impl ClientApp {
         let mut data = data.to_owned();
         cipher.apply_keystream(&mut data);
 
-        let _ = fs::create_dir_all(LOCAL_REPO);
-        let path = format!("{}/{}", LOCAL_REPO, hex::encode(file_id));
+        let local_repo = self.folder.to_owned() + LOCAL_REPO;
+
+        let _ = fs::create_dir_all(&local_repo);
+        let path = format!("{}/{}", local_repo, hex::encode(file_id));
 
         fs::write(Path::new(&path), data)?;
         info!(event = "valid file saved", file = path);
@@ -272,18 +287,20 @@ impl ClientApp {
             .expect("TODO");
 
         let http_client = Client::new();
-        let res = http_client.request(req).await.expect("valid request");
+        let res = http_client
+            .request(req)
+            .await
+            .map_err(|_| Error::FailUpload(file_name.clone()))?;
 
         if res.status() != StatusCode::OK {
             Err(Error::FailUpload(file_name))
         } else {
-            info!(event = "file uploaded", file_name);
             Ok(hash)
         }
     }
 
     /// Terminates the upload session on the server
-    async fn close_upload(&self) {
+    async fn close_upload(&self) -> Result<(), Error> {
         let http_client = Client::new();
         if let Ok(req) = Request::builder()
             .method(Method::POST)
@@ -295,14 +312,19 @@ impl ClientApp {
             .header("Content-Type", "application/octet-stream")
             .body(Body::empty())
         {
-            let res = http_client.request(req).await.expect("response");
+            let res = http_client
+                .request(req)
+                .await
+                .map_err(|_| Error::FailCloseUpload)?;
 
             if res.status() != StatusCode::OK {
                 error!(event = "failed to close upload file");
             } else {
-                info!(event = "file uploaded CLOSESD");
+                info!(event = "bucket finalized", bucket_id = self.bucket_id());
             };
         };
+
+        Ok(())
     }
 
     /// Downloads a blob/binary object from the storage server

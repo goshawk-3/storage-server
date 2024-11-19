@@ -60,8 +60,12 @@ fn prompt() -> requestty::Result<Commands> {
     }
 }
 
-pub(crate) async fn run_loop(server_url: String, src_folder: &Path) {
-    let mut client = ClientApp::new(server_url.as_str());
+pub(crate) async fn run_loop(
+    server_url: String,
+    src_folder: &Path,
+    client_dir: &str,
+) {
+    let mut client = ClientApp::new(server_url.as_str(), client_dir);
 
     loop {
         match prompt().unwrap() {
