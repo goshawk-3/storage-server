@@ -94,7 +94,8 @@ pub(crate) async fn run_loop(
             }
             // List all files in the download folder
             Commands::ListDownloadedFiles => {
-                let files = read_files(LOCAL_REPO);
+                let local_repo = client_dir.to_owned() + LOCAL_REPO;
+                let files = read_files(&local_repo);
                 for (_, file) in files.iter() {
                     println!("downloaded file: {}", file);
                 }
